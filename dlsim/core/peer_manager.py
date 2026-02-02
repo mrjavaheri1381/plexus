@@ -57,7 +57,7 @@ class PeerManager:
     def update_peer_activity(self, peer_pk: bytes, round_active: int) -> None:
         """
         Update the status of a particular peer.
-        :param peer_pk: The public key of the peer which activity status will be udpated.
+        :param peer_pk: The public key of the peer which activity status will be updated.
         :param round_active: The last round in which this peer has been active.
         """
         info = self.last_active[peer_pk]
