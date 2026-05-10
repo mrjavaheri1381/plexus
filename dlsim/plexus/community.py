@@ -94,6 +94,7 @@ class PlexusCommunity(LearningCommunity):
         self.sample_manager: Optional[SampleManager] = None  # Initialized when the process is setup
 
         self.other_nodes_bws: Dict[bytes, int] = {}
+        self.other_nodes_computations: Dict[bytes, float] = {}
 
         self.add_message_handler(AdvertiseMembership, self.on_membership_advertisement)
         self.add_message_handler(PingPayload, self.on_ping)
@@ -283,7 +284,8 @@ class PlexusCommunity(LearningCommunity):
         if not getting_aggregators:
             # We use the new graph-based selection logic
             candidate_pool = candidate_peers[:self.sample_manager.candidate_size]
-            self.sample_manager.create_graph(candidate_pool, sample, other_nodes_bws=self.other_nodes_bws)
+            self.sample_manager.create_graph(candidate_pool, sample, other_nodes_bws=self.other_nodes_bws,
+                                             other_nodes_computations=self.other_nodes_computations)
             selected_peers = self.sample_manager.solve_selection_problem()
             candidate_peers = selected_peers + [p for p in candidate_peers if p not in selected_peers]
 

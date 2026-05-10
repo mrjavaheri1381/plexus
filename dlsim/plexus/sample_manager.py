@@ -18,7 +18,8 @@ class SampleManager:
         self.sample_cache: Dict[int, List[bytes]] = {}
         self.graph = {}
 
-    def create_graph(self, candidates: List[bytes], round: int, other_nodes_bws: Dict[bytes, int] = None):
+    def create_graph(self, candidates: List[bytes], round: int, other_nodes_bws: Dict[bytes, int] = None,
+                     other_nodes_computations: Dict[bytes, float] = None):
         """
         Create a graph representation of the candidates with their weights.
         """
@@ -26,7 +27,7 @@ class SampleManager:
         for peer_pk in candidates:
             # Placeholder for node weights
             bandwidth = other_nodes_bws.get(peer_pk, 0) if other_nodes_bws else 0
-            compute_power = 0  # Placeholder
+            compute_power = other_nodes_computations.get(peer_pk, 0) if other_nodes_computations else 0
             last_participated = self.peer_manager.get_last_participated(peer_pk)
             distance_from_last = round - last_participated
 

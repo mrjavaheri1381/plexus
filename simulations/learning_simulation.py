@@ -137,8 +137,11 @@ class LearningSimulation(TaskManager):
         rand = Random(self.args.seed)
         device_ids = rand.sample(list(data.keys()), self.args.peers)
         nodes_bws: Dict[bytes, int] = {}
+        nodes_computations: Dict[bytes, float] = {}
         for ind, node in enumerate(self.nodes):
-            node.overlays[0].model_manager.model_trainer.simulated_speed = data[device_ids[ind]]["computation"]
+            compute_speed = data[device_ids[ind]]["computation"]
+            node.overlays[0].model_manager.model_trainer.simulated_speed = compute_speed
+            nodes_computations[node.overlays[0].my_peer.public_key.key_to_bin()] = compute_speed
             if self.args.bypass_model_transfers:
                 # Also apply the network latencies
                 if self.session_settings.dfl is not None and node.overlays[0].my_peer.public_key.key_to_bin() == self.session_settings.dfl.fixed_aggregator:
@@ -151,6 +154,7 @@ class LearningSimulation(TaskManager):
 
         for node in self.nodes:
             node.overlays[0].other_nodes_bws = nodes_bws
+            node.overlays[0].other_nodes_computations = nodes_computations
 
     def apply_diablo_traces(self):
         # Read and process the latency matrix
@@ -163,15 +167,19 @@ class LearningSimulation(TaskManager):
                 bw_means.append(mean_value)
 
         nodes_bws: Dict[bytes, int] = {}
+        nodes_computations: Dict[bytes, float] = {}
         for ind, node in enumerate(self.nodes):
             # TODO this is rather arbitrary for now
-            node.overlays[0].model_manager.model_trainer.simulated_speed = 100
+            compute_speed = 100
+            node.overlays[0].model_manager.model_trainer.simulated_speed = compute_speed
             bw_limit: int = bw_means[ind % len(bw_means)]
             node.overlays[0].bw_scheduler.bw_limit = bw_limit
             nodes_bws[node.overlays[0].my_peer.public_key.key_to_bin()] = bw_limit
+            nodes_computations[node.overlays[0].my_peer.public_key.key_to_bin()] = compute_speed
 
         for node in self.nodes:
             node.overlays[0].other_nodes_bws = nodes_bws
+            node.overlays[0].other_nodes_computations = nodes_computations
 
     def apply_compute_and_bandwidth_traces(self):
         if self.args.traces == "none":
