@@ -69,6 +69,7 @@ class PlexusSimulation(LearningSimulation):
 
         dfl_settings = DFLSettings(
             sample_size=self.args.sample_size,
+            candidate_size=self.args.candidate_size,
             num_aggregators=self.args.num_aggregators,
             success_fraction=self.args.success_fraction,
             liveness_success_fraction=self.args.liveness_success_fraction,
@@ -166,7 +167,8 @@ class PlexusSimulation(LearningSimulation):
                 if peer_pk not in active_nodes_pks:
                     # Toggle the status to inactive as this peer is not active from the beginning
                     peer_info = peer_manager.last_active[peer_pk]
-                    peer_manager.last_active[peer_pk] = (peer_info[0], (0, NodeMembershipChange.LEAVE))
+                    last_participated = peer_manager.get_last_participated(peer_pk)
+                    peer_manager.last_active[peer_pk] = (peer_info[0], (0, NodeMembershipChange.LEAVE, last_participated))
 
         # We will now start round 1. The nodes that participate in the first round are always selected from the pool of
         # active peers. If we use our sampling function, training might not start at all if many offline nodes

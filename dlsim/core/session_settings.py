@@ -26,6 +26,7 @@ class DFLSettings:
     Setting related to sample-based decentralized federated learning.
     """
     sample_size: int
+    candidate_size: int
     num_aggregators: int
     success_fraction: float = 1
     liveness_success_fraction: float = 0.4

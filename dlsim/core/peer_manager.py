@@ -16,8 +16,8 @@ class PeerManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.my_pk: bytes = my_pk
         self.inactivity_threshold = inactivity_threshold
-        self.last_active: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}
-        self.last_active_pending: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}  # Pending changes that are not immediately applied.
+        self.last_active: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange, int]]] = {}
+        self.last_active_pending: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange, int]]] = {}  # Pending changes that are not immediately applied.
 
     def add_peer(self, peer_pk: bytes, round_active: Optional[int] = NO_ACTIVITY_INFO) -> None:
         """
@@ -30,7 +30,7 @@ class PeerManager:
 
         self.logger.debug("Participant %s adding participant %s to local view",
                           self.get_my_short_id(), self.get_short_id(peer_pk))
-        self.last_active[peer_pk] = (round_active, (0, NodeMembershipChange.JOIN))
+        self.last_active[peer_pk] = (round_active, (0, NodeMembershipChange.JOIN, 0))
 
     def remove_peer(self, peer_pk) -> None:
         """
@@ -63,6 +63,20 @@ class PeerManager:
         info = self.last_active[peer_pk]
         self.last_active[peer_pk] = (max(self.last_active[peer_pk][0], round_active), info[1])
 
+    def get_last_participated(self, peer_pk: bytes) -> int:
+        if peer_pk not in self.last_active or len(self.last_active[peer_pk][1]) < 3:
+            return 0
+        return self.last_active[peer_pk][1][2]
+
+    def update_peer_participation(self, peer_pk: bytes, round: int) -> None:
+        if peer_pk not in self.last_active:
+            return
+        info = self.last_active[peer_pk]
+        status = info[1]
+        last_participated = status[2] if len(status) > 2 else 0
+        new_status = (status[0], status[1], max(last_participated, round))
+        self.last_active[peer_pk] = (info[0], new_status)
+
     def get_my_short_id(self) -> str:
         """
         Return a short description of your public key
@@ -90,7 +104,7 @@ class PeerManager:
             return -1
         return max([round for round, _ in self.last_active.values()])
 
-    def merge_population_views(self, other_view: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]]) -> None:
+    def merge_population_views(self, other_view: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange, int]]]) -> None:
         """
         Reconcile the differences between two population views.
         """
@@ -116,3 +130,9 @@ class PeerManager:
                 self.logger.debug("Participant %s updating membership status of participant %s to: %s",
                                   self.get_my_short_id(), self.get_short_id(peer_pk), str(info[1]))
                 self.last_active[peer_pk] = (self.last_active[peer_pk][0], info[1])
+
+            # Update last participated round
+            if len(info[1]) > 2:
+                last_participated = info[1][2]
+                if last_participated > self.get_last_participated(peer_pk):
+                    self.update_peer_participation(peer_pk, last_participated)

@@ -118,7 +118,8 @@ class PlexusCommunity(LearningCommunity):
                          (len(settings.participants), settings.dfl.sample_size, self.peer_manager.get_my_short_id()))
         super().setup(settings)
         self.peer_manager.inactivity_threshold = settings.dfl.inactivity_threshold
-        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size, settings.dfl.num_aggregators)
+        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size,
+                                            settings.dfl.candidate_size, settings.dfl.num_aggregators)
 
     def get_round_estimate(self) -> int:
         """
@@ -237,7 +238,8 @@ class PlexusCommunity(LearningCommunity):
 
         # Update your own population view
         info = self.peer_manager.last_active[self.my_id]
-        self.peer_manager.last_active[self.my_id] = (info[0], (advertise_index, change))
+        last_participated = self.peer_manager.get_last_participated(self.my_id)
+        self.peer_manager.last_active[self.my_id] = (info[0], (advertise_index, change, last_participated))
 
     @lazy_wrapper_wd(GlobalTimeDistributionPayload, AdvertiseMembership)
     def on_membership_advertisement(self, peer, dist, payload, raw_data: bytes):
@@ -260,12 +262,12 @@ class PlexusCommunity(LearningCommunity):
                               self.peer_manager.get_my_short_id(), peer_id, payload.index)
             # Do not apply this immediately since we do not want the newly joined node to be part of the next sample just yet.
             self.peer_manager.last_active_pending[peer_pk] = (
-            max(payload.round, latest_round), (payload.index, NodeMembershipChange.JOIN))
+            max(payload.round, latest_round), (payload.index, NodeMembershipChange.JOIN, 0))
         else:
             self.logger.debug("Participant %s updating membership of participant %s to: LEAVE (idx %d)",
                               self.peer_manager.get_my_short_id(), peer_id, payload.index)
             self.peer_manager.last_active[peer_pk] = (
-            max(payload.round, latest_round), (payload.index, NodeMembershipChange.LEAVE))
+            max(payload.round, latest_round), (payload.index, NodeMembershipChange.LEAVE, self.peer_manager.get_last_participated(peer_pk)))
 
     def determine_available_peers_for_sample(self, sample: int, count: int,
                                              getting_aggregators: bool = False, pick_active_peers: bool = True) -> Future:
@@ -277,6 +279,14 @@ class PlexusCommunity(LearningCommunity):
             else:
                 raw_peers = self.peer_manager.get_peers()
             candidate_peers = self.sample_manager.get_ordered_sample_list(sample, raw_peers)
+
+        if not getting_aggregators:
+            # We use the new graph-based selection logic
+            candidate_pool = candidate_peers[:self.sample_manager.candidate_size]
+            self.sample_manager.create_graph(candidate_pool, sample, other_nodes_bws=self.other_nodes_bws)
+            selected_peers = self.sample_manager.solve_selection_problem()
+            candidate_peers = selected_peers + [p for p in candidate_peers if p not in selected_peers]
+
         self.logger.info("Participant %s starts to determine %d available peers in sample %d (candidates: %d)",
                          self.peer_manager.get_my_short_id(), count, sample,
                          len(candidate_peers))
@@ -285,6 +295,10 @@ class PlexusCommunity(LearningCommunity):
             # Filter the candidates in the sample and sort them based on their bandwidth capabilities
             candidate_peers = sorted(candidate_peers[:self.settings.dfl.sample_size],
                                      key=lambda pk: self.other_nodes_bws[pk], reverse=True)
+
+        # Update last participation for the selected peers (the ones we are about to ping/use)
+        for peer_pk in candidate_peers[:count]:
+            self.peer_manager.update_peer_participation(peer_pk, sample)
 
         cache = PingPeersRequestCache(self, candidate_peers, count, sample)
         self.request_cache.add(cache)
@@ -333,8 +347,9 @@ class PlexusCommunity(LearningCommunity):
         if peer_pk in self.peer_manager.last_active:
             self.peer_manager.update_peer_activity(peer_pk, max(self.get_round_estimate(), payload.round))
             if payload.index > self.peer_manager.last_active[peer_pk][1][0]:
+                last_participated = self.peer_manager.get_last_participated(peer_pk)
                 self.peer_manager.last_active[peer_pk] = (self.peer_manager.last_active[peer_pk][0],
-                                                          (payload.index, NodeMembershipChange.JOIN))
+                                                          (payload.index, NodeMembershipChange.JOIN, last_participated))
 
         self.send_pong(peer, payload.identifier)
 
@@ -373,8 +388,9 @@ class PlexusCommunity(LearningCommunity):
         if peer_pk in self.peer_manager.last_active:
             self.peer_manager.update_peer_activity(peer_pk, max(self.get_round_estimate(), payload.round))
             if payload.index > self.peer_manager.last_active[peer_pk][1][0]:
+                last_participated = self.peer_manager.get_last_participated(peer_pk)
                 self.peer_manager.last_active[peer_pk] = (self.peer_manager.last_active[peer_pk][0],
-                                                          (payload.index, NodeMembershipChange.JOIN))
+                                                          (payload.index, NodeMembershipChange.JOIN, last_participated))
 
         self.peer_manager.update_peer_activity(peer.public_key.key_to_bin(),
                                                max(self.get_round_estimate(), payload.round))
@@ -418,7 +434,8 @@ class PlexusCommunity(LearningCommunity):
                 self.logger.warning("Participant %s ignoring agg ack as it's not training or the incoming agg ack is for an invalid round", my_peer_id)
         else:
             # Mark this aggregator as offline
-            self.peer_manager.last_active[peer_pk] = (payload.round, (0, NodeMembershipChange.LEAVE))
+            last_participated = self.peer_manager.get_last_participated(peer_pk)
+            self.peer_manager.last_active[peer_pk] = (payload.round, (0, NodeMembershipChange.LEAVE, last_participated))
 
             # Try to send the model to the next eligible aggregator
             if self.train_future:
