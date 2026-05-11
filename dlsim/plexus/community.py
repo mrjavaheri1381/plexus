@@ -94,6 +94,7 @@ class PlexusCommunity(LearningCommunity):
         self.sample_manager: Optional[SampleManager] = None  # Initialized when the process is setup
 
         self.other_nodes_bws: Dict[bytes, int] = {}
+        self.other_nodes_compute: Dict[bytes, float] = {}
 
         self.add_message_handler(AdvertiseMembership, self.on_membership_advertisement)
         self.add_message_handler(PingPayload, self.on_ping)
@@ -118,7 +119,7 @@ class PlexusCommunity(LearningCommunity):
                          (len(settings.participants), settings.dfl.sample_size, self.peer_manager.get_my_short_id()))
         super().setup(settings)
         self.peer_manager.inactivity_threshold = settings.dfl.inactivity_threshold
-        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size, settings.dfl.num_aggregators)
+        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size, settings.dfl.num_aggregators, settings.dfl.candidate_size)
 
     def get_round_estimate(self) -> int:
         """
@@ -160,9 +161,17 @@ class PlexusCommunity(LearningCommunity):
                     peers_to_inform.add(peer_pk)
 
                 # Also determine the peers in the sample size
-                candidate_peers = self.sample_manager.get_ordered_sample_list(
-                    agg_round - 1, self.peer_manager.get_active_peers(agg_round - 1))[:self.settings.dfl.sample_size]
-                for candidate_peer in candidate_peers:
+                ordered_peers = self.sample_manager.get_ordered_sample_list(
+                    agg_round - 1, self.peer_manager.get_active_peers(agg_round - 1))
+                candidate_pool = ordered_peers[:self.settings.dfl.candidate_size]
+                self.sample_manager.build_candidates_graph(agg_round - 1, candidate_pool, self.other_nodes_bws, self.other_nodes_compute)
+                candidate_peers = self.sample_manager.solve_candidates_graph()
+                for peer in ordered_peers:
+                    if len(candidate_peers) >= self.settings.dfl.sample_size:
+                        break
+                    if peer not in candidate_peers:
+                        candidate_peers.append(peer)
+                for candidate_peer in candidate_peers[:self.settings.dfl.sample_size]:
                     peers_to_inform.add(candidate_peer)
 
                 self.logger.info("Aggregator %s will inform %d peers of failed aggregation",
@@ -276,7 +285,29 @@ class PlexusCommunity(LearningCommunity):
                 raw_peers = self.peer_manager.get_active_peers(sample)
             else:
                 raw_peers = self.peer_manager.get_peers()
-            candidate_peers = self.sample_manager.get_ordered_sample_list(sample, raw_peers)
+            ordered_peers = self.sample_manager.get_ordered_sample_list(sample, raw_peers)
+
+            # Select candidate_size peers from the ordered list
+            candidate_pool = ordered_peers[:self.settings.dfl.candidate_size]
+
+            # Build the candidates graph
+            self.sample_manager.build_candidates_graph(sample, candidate_pool, self.other_nodes_bws, self.other_nodes_compute)
+
+            # Solve the problem and get the final sample size
+            candidate_peers = self.sample_manager.solve_candidates_graph()
+
+            # Pad with ordered peers if solve_candidates_graph didn't return enough (for safety)
+            for peer in ordered_peers:
+                if len(candidate_peers) >= self.settings.dfl.sample_size:
+                    break
+                if peer not in candidate_peers:
+                    candidate_peers.append(peer)
+
+            # Keep additional ordered peers as backups
+            for peer in ordered_peers:
+                if peer not in candidate_peers:
+                    candidate_peers.append(peer)
+
         self.logger.info("Participant %s starts to determine %d available peers in sample %d (candidates: %d)",
                          self.peer_manager.get_my_short_id(), count, sample,
                          len(candidate_peers))
@@ -284,7 +315,7 @@ class PlexusCommunity(LearningCommunity):
         if getting_aggregators and not self.settings.dfl.fixed_aggregator and self.other_nodes_bws:
             # Filter the candidates in the sample and sort them based on their bandwidth capabilities
             candidate_peers = sorted(candidate_peers[:self.settings.dfl.sample_size],
-                                     key=lambda pk: self.other_nodes_bws[pk], reverse=True)
+                                     key=lambda pk: self.other_nodes_bws[pk], reverse=True) + candidate_peers[self.settings.dfl.sample_size:]
 
         cache = PingPeersRequestCache(self, candidate_peers, count, sample)
         self.request_cache.add(cache)
@@ -437,6 +468,10 @@ class PlexusCommunity(LearningCommunity):
             raise RuntimeError("Round number %d invalid!" % round)
 
         self.logger.info("Participant %s starts participating in round %d", self.peer_manager.get_my_short_id(), round)
+
+        # Update last participated round for self
+        self.peer_manager.update_last_participated(self.my_id, round)
+
         self.completed_training = False
         self.log_event(round, "start_train")
 
@@ -556,7 +591,11 @@ class PlexusCommunity(LearningCommunity):
     def eva_send_model(self, round, model, type, population_view, peer):
         start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
         serialized_model = serialize_model(model)
-        serialized_population_view = pickle.dumps(population_view)
+
+        # Package both last_active and last_participated
+        view_tuple = (population_view, self.peer_manager.last_participated)
+        serialized_population_view = pickle.dumps(view_tuple)
+
         self.bw_out_stats["bytes"]["model"] += len(serialized_model)
         self.bw_out_stats["bytes"]["view"] += len(serialized_population_view)
         self.bw_out_stats["num"]["model"] += 1
@@ -586,12 +625,22 @@ class PlexusCommunity(LearningCommunity):
         json_data = json.loads(result.info.decode())
         serialized_model = result.data[:json_data["model_data_len"]]
         serialized_population_view = result.data[json_data["model_data_len"]:]
-        received_population_view = pickle.loads(serialized_population_view)
+        try:
+            view_tuple = pickle.loads(serialized_population_view)
+            if isinstance(view_tuple, tuple) and len(view_tuple) == 2:
+                received_population_view, received_last_participated = view_tuple
+            else:
+                received_population_view = view_tuple
+                received_last_participated = {}
+        except Exception:
+            received_population_view = {}
+            received_last_participated = {}
+
         self.bw_in_stats["bytes"]["model"] += len(serialized_model)
         self.bw_in_stats["bytes"]["view"] += len(serialized_population_view)
         self.bw_in_stats["num"]["model"] += 1
         self.bw_in_stats["num"]["view"] += 1
-        self.peer_manager.merge_population_views(received_population_view)
+        self.peer_manager.merge_population_views(received_population_view, received_last_participated)
         self.peer_manager.update_peer_activity(result.peer.public_key.key_to_bin(),
                                                max(json_data["round"], self.get_round_estimate()))
         incoming_model = unserialize_model(serialized_model, self.settings.dataset, architecture=self.settings.model)
