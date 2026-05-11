@@ -48,8 +48,10 @@ class SampleManager:
             compute = other_nodes_compute.get(peer_pk, 0.0)
             last_participated = self.peer_manager.last_participated.get(peer_pk, 0)
             diff_participated = round_num - last_participated
+            last_aggregated = self.peer_manager.last_aggregated.get(peer_pk, 0)
+            diff_aggregated = round_num - last_aggregated
 
-            G.add_node(peer_pk, bw=bw, compute=compute, diff_participated=diff_participated)
+            G.add_node(peer_pk, bw=bw, compute=compute, diff_participated=diff_participated, diff_aggregated=diff_aggregated)
 
         for i in range(len(candidates)):
             for j in range(i + 1, len(candidates)):

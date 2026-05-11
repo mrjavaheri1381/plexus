@@ -592,8 +592,8 @@ class PlexusCommunity(LearningCommunity):
         start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
         serialized_model = serialize_model(model)
 
-        # Package both last_active and last_participated
-        view_tuple = (population_view, self.peer_manager.last_participated)
+        # Package last_active, last_participated, and last_aggregated
+        view_tuple = (population_view, self.peer_manager.last_participated, self.peer_manager.last_aggregated)
         serialized_population_view = pickle.dumps(view_tuple)
 
         self.bw_out_stats["bytes"]["model"] += len(serialized_model)
@@ -627,20 +627,30 @@ class PlexusCommunity(LearningCommunity):
         serialized_population_view = result.data[json_data["model_data_len"]:]
         try:
             view_tuple = pickle.loads(serialized_population_view)
-            if isinstance(view_tuple, tuple) and len(view_tuple) == 2:
-                received_population_view, received_last_participated = view_tuple
+            if isinstance(view_tuple, tuple):
+                if len(view_tuple) == 3:
+                    received_population_view, received_last_participated, received_last_aggregated = view_tuple
+                elif len(view_tuple) == 2:
+                    received_population_view, received_last_participated = view_tuple
+                    received_last_aggregated = {}
+                else:
+                    received_population_view = view_tuple
+                    received_last_participated = {}
+                    received_last_aggregated = {}
             else:
                 received_population_view = view_tuple
                 received_last_participated = {}
+                received_last_aggregated = {}
         except Exception:
             received_population_view = {}
             received_last_participated = {}
+            received_last_aggregated = {}
 
         self.bw_in_stats["bytes"]["model"] += len(serialized_model)
         self.bw_in_stats["bytes"]["view"] += len(serialized_population_view)
         self.bw_in_stats["num"]["model"] += 1
         self.bw_in_stats["num"]["view"] += 1
-        self.peer_manager.merge_population_views(received_population_view, received_last_participated)
+        self.peer_manager.merge_population_views(received_population_view, received_last_participated, received_last_aggregated)
         self.peer_manager.update_peer_activity(result.peer.public_key.key_to_bin(),
                                                max(json_data["round"], self.get_round_estimate()))
         incoming_model = unserialize_model(serialized_model, self.settings.dataset, architecture=self.settings.model)
@@ -709,6 +719,9 @@ class PlexusCommunity(LearningCommunity):
     async def aggregator_complete_round(self, model_round: int, index: int):
         model_manager = self.aggregations[index]
         self.aggregations_completed.add(index)
+
+        # Track that we aggregated for this round
+        self.peer_manager.update_last_aggregated(self.my_id, model_round)
 
         # Stop the timeout task
         timeout_task_name: str = "aggregate_%d_timeout" % model_round

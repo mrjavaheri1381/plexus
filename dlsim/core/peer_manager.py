@@ -19,6 +19,7 @@ class PeerManager:
         self.last_active: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}
         self.last_active_pending: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}  # Pending changes that are not immediately applied.
         self.last_participated: Dict[bytes, int] = {}
+        self.last_aggregated: Dict[bytes, int] = {}
 
     def add_peer(self, peer_pk: bytes, round_active: Optional[int] = NO_ACTIVITY_INFO) -> None:
         """
@@ -90,6 +91,13 @@ class PeerManager:
         if peer_pk not in self.last_participated or round_participated > self.last_participated[peer_pk]:
             self.last_participated[peer_pk] = round_participated
 
+    def update_last_aggregated(self, peer_pk: bytes, round_aggregated: int) -> None:
+        """
+        Update the last aggregated round of a peer.
+        """
+        if peer_pk not in self.last_aggregated or round_aggregated > self.last_aggregated[peer_pk]:
+            self.last_aggregated[peer_pk] = round_aggregated
+
     def get_highest_round_in_population_view(self) -> int:
         """
         Return the highest round in the population view.
@@ -98,13 +106,17 @@ class PeerManager:
             return -1
         return max([round for round, _ in self.last_active.values()])
 
-    def merge_population_views(self, other_view: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]], other_last_participated: Optional[Dict[bytes, int]] = None) -> None:
+    def merge_population_views(self, other_view: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]], other_last_participated: Optional[Dict[bytes, int]] = None, other_last_aggregated: Optional[Dict[bytes, int]] = None) -> None:
         """
         Reconcile the differences between two population views.
         """
         if other_last_participated:
             for peer_pk, round_participated in other_last_participated.items():
                 self.update_last_participated(peer_pk, round_participated)
+
+        if other_last_aggregated:
+            for peer_pk, round_aggregated in other_last_aggregated.items():
+                self.update_last_aggregated(peer_pk, round_aggregated)
 
         for peer_pk, info in other_view.items():
             # Is this a new joining node?
