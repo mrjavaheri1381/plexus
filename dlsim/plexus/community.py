@@ -36,6 +36,7 @@ class PlexusCommunity(LearningCommunity):
 
         self.random = Random(int.from_bytes(self.my_peer.public_key.key_to_bin(), 'big'))
         self.peers_first_round: List[bytes] = []
+        self.data_distribution: List[float] = []
 
         # Statistics
         self.active_peers_history = []
@@ -120,6 +121,38 @@ class PlexusCommunity(LearningCommunity):
         super().setup(settings)
         self.peer_manager.inactivity_threshold = settings.dfl.inactivity_threshold
         self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size, settings.dfl.num_aggregators, settings.dfl.candidate_size)
+
+        self.data_distribution = self.compute_data_distribution()
+
+    def compute_data_distribution(self):
+        if not self.model_manager.model_trainer.dataset:
+            from dlsim.core.datasets import create_dataset
+            self.model_manager.model_trainer.dataset = create_dataset(
+                self.settings,
+                participant_index=self.model_manager.model_trainer.participant_index,
+                train_dir=self.model_manager.model_trainer.train_dir
+            )
+
+        import sys
+        module = sys.modules[self.model_manager.model_trainer.dataset.__class__.__module__]
+        num_classes = getattr(module, 'NUM_CLASSES', None)
+        if not num_classes:
+            return []
+
+        train_set = self.model_manager.model_trainer.dataset.get_trainset(batch_size=1, shuffle=False)
+
+        counts = [0.0] * num_classes
+        total = 0
+        for data, target in train_set:
+            if isinstance(target, torch.Tensor):
+                target = target.item()
+            counts[target] += 1
+            total += 1
+
+        if total == 0:
+            return counts
+
+        return [c / total for c in counts]
 
     def get_round_estimate(self) -> int:
         """
